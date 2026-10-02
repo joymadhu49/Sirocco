@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- Fixed: the battery icon in the panel now matches the real charge instead of always showing three quarters.
+
 ## 1.0.0
 
 - First release.

@@ -73,8 +73,15 @@ struct PanelView: View {
         HStack(spacing: 8) {
             tile("Chip", model.chipTemp.map { prefs.temperature($0) } ?? "n/a")
             tile("Fans", model.averageRPM > 0 ? Preferences.rpm(model.averageRPM) : (model.fans.isEmpty ? "n/a" : "Stopped"))
-            tile("Power", powerText, symbol: model.onAC ? "bolt.fill" : "battery.75percent")
+            tile("Power", powerText, symbol: model.onAC ? "bolt.fill" : batterySymbol)
         }
+    }
+
+    /// The battery icon whose fill is nearest the real charge.
+    private var batterySymbol: String {
+        guard let percent = model.battery?.percent else { return "battery.100percent" }
+        let level = min(max(Int((Double(percent) / 25).rounded()), 0), 4) * 25
+        return "battery.\(level)percent"
     }
 
     private var powerText: String {
