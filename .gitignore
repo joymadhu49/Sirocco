@@ -33,3 +33,6 @@ AppIcon.iconset/
 
 # Loose icon previews written by Scripts/make_icon.swift
 icon-preview-*.png
+
+# The website is kept out of this repository
+website/
