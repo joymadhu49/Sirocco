@@ -49,7 +49,7 @@ jobs:
     env:
       SIROCCO_SIGNING_IDENTITY: Developer ID Application
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Check the tag matches the version in project.yml
         run: |
