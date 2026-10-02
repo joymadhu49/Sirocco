@@ -11,3 +11,7 @@ updates:
     groups:
       website:
         patterns: ["*"]
+    # Major versions (a new TypeScript or ESLint) can break the build, so those are done by hand.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
