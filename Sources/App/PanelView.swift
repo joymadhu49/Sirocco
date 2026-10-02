@@ -3,15 +3,14 @@ import SwiftUI
 struct PanelView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var prefs: Preferences
-    @EnvironmentObject var updates: UpdateController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
             if model.phase == .unsupported {
-                unsupportedCard
+                SetupCard()
             } else {
-                if model.phase != .ready { setupCard }
+                if model.phase != .ready { SetupCard() }
                 readings
                 Group {
                     modePicker
@@ -68,63 +67,6 @@ struct PanelView: View {
             .foregroundStyle(color)
     }
 
-    // MARK: Setup
-
-    @ViewBuilder
-    private var setupCard: some View {
-        switch model.phase {
-        case .notInstalled:
-            card(symbol: "lock.shield", title: "Turn on fan control",
-                 body: "Sirocco uses a small helper to change fan speeds. macOS asks you to allow it once.") {
-                Button("Turn On") { model.enableHelper() }.buttonStyle(.borderedProminent)
-            }
-        case .needsApproval:
-            card(symbol: "hand.raised", title: "Allow Sirocco in System Settings",
-                 body: "In General, Login Items & Extensions, switch on Sirocco under Allow in the Background. This panel updates on its own.") {
-                Button("Open System Settings") { model.openApprovalSettings() }.buttonStyle(.borderedProminent)
-            }
-        case .starting:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Starting the helper").font(.caption).foregroundStyle(.secondary)
-            }
-        case .notResponding:
-            card(symbol: "exclamationmark.triangle", title: "The helper is not responding",
-                 body: "Restarting it usually fixes this.") {
-                Button(model.busy ? "Restarting…" : "Restart Helper") { model.restartHelper() }
-                    .disabled(model.busy)
-            }
-        case .ready, .unsupported:
-            EmptyView()
-        }
-    }
-
-    private var unsupportedCard: some View {
-        card(symbol: "wind", title: "This Mac has no fans",
-             body: "Sirocco controls fan speed, and this Mac cools itself without fans, so there is nothing for it to do here.") {
-            EmptyView()
-        }
-    }
-
-    private func card<Actions: View>(symbol: String, title: String, body: String,
-                                     @ViewBuilder actions: () -> Actions) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: symbol)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.system(size: 12, weight: .semibold))
-                Text(body).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                actions().padding(.top, 2)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-    }
-
     // MARK: Readings
 
     private var readings: some View {
@@ -159,10 +101,10 @@ struct PanelView: View {
     private var modePicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 2) {
-                ForEach([(FanMode.smart, "Smart"), (.max, "Max"), (.off, "Off")], id: \.0) { mode, title in
+                ForEach(FanMode.allCases, id: \.self) { mode in
                     let selected = model.config.mode == mode
                     Button { model.config.mode = mode } label: {
-                        Text(title)
+                        Text(mode.title)
                             .font(.system(size: 12, weight: selected ? .semibold : .regular))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 5)
@@ -175,16 +117,8 @@ struct PanelView: View {
             }
             .padding(2)
             .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-            Text(modeHint).font(.caption).foregroundStyle(.secondary)
+            Text(model.config.mode.hint).font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var modeHint: String {
-        switch model.config.mode {
-        case .smart: "Boosts along your curve when the conditions below are met. Otherwise macOS runs the fans."
-        case .max: "Fans held at your Maximum until you switch modes."
-        case .off: "Sirocco leaves the fans alone. macOS runs them."
         }
     }
 
@@ -229,11 +163,13 @@ struct PanelView: View {
                 HStack {
                     Text("Away after").font(.system(size: 12))
                     Spacer()
-                    Picker("", selection: $model.config.idleMinutes) {
-                        ForEach([2.0, 5, 10, 15, 30], id: \.self) { Text("\(Int($0)) min").tag($0) }
+                    // Buttons, not a Picker: in this panel a menu's picker items come up
+                    // disabled, because the panel can never be the main window.
+                    Menu("\(Int(model.config.idleMinutes)) min") {
+                        ForEach([2.0, 5, 10, 15, 30], id: \.self) { minutes in
+                            Button("\(Int(minutes)) min") { model.config.idleMinutes = minutes }
+                        }
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
                     .fixedSize()
                 }
             }
@@ -298,7 +234,10 @@ struct PanelView: View {
                 Text(model.phase == .ready ? "Helper running" : "Helper not running")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                moreMenu
+                // Everything that is not a fan control lives in the settings window.
+                Button { SettingsWindowController.shared.show() } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
                 Button("Quit") { NSApp.terminate(nil) }
             }
             if model.phase == .ready {
@@ -308,35 +247,80 @@ struct PanelView: View {
             }
         }
     }
+}
 
-    private var moreMenu: some View {
-        Menu {
-            Picker("Menu Bar Shows", selection: $prefs.menuBarText) {
-                ForEach(Preferences.MenuBarText.allCases) { Text($0.title).tag($0) }
-            }
-            Toggle("Spin the Icon", isOn: $prefs.spinIcon)
-            Picker("Temperature", selection: $prefs.fahrenheit) {
-                Text("Celsius").tag(false)
-                Text("Fahrenheit").tag(true)
-            }
-            Toggle("Open at Login", isOn: Binding(get: { model.launchAtLogin }, set: model.setLaunchAtLogin))
-            Divider()
-            Button("Check for Updates…") { updates.checkForUpdates() }
-                .disabled(!updates.canCheckForUpdates)
-            Toggle("Check Automatically", isOn: $updates.automaticallyChecks)
-            Divider()
-            Button("Reset Fan Settings") { model.resetToDefaults() }
-            if model.phase != .notInstalled {
-                Button("Restart Helper") { model.restartHelper() }
-                Button("Remove Helper") { model.removeHelper() }
-            }
-            Divider()
-            Text("Sirocco \(model.appVersion)")
-        } label: {
-            Image(systemName: "ellipsis.circle")
+extension FanMode {
+    var title: String {
+        switch self {
+        case .smart: "Smart"
+        case .max: "Max"
+        case .off: "Off"
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+    }
+
+    var hint: String {
+        switch self {
+        case .smart: "Boosts along your curve when the conditions below are met. Otherwise macOS runs the fans."
+        case .max: "Fans held at your Maximum until you switch modes."
+        case .off: "Sirocco leaves the fans alone. macOS runs them."
+        }
+    }
+}
+
+/// What stands between the user and working fan control, with the button that fixes it.
+/// Empty once the helper is ready. Shared by the panel and the settings window.
+struct SetupCard: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        switch model.phase {
+        case .unsupported:
+            card(symbol: "wind", title: "This Mac has no fans",
+                 body: "Sirocco controls fan speed, and this Mac cools itself without fans, so there is nothing for it to do here.") {
+                EmptyView()
+            }
+        case .notInstalled:
+            card(symbol: "lock.shield", title: "Turn on fan control",
+                 body: "Sirocco uses a small helper to change fan speeds. macOS asks you to allow it once.") {
+                Button("Turn On") { model.enableHelper() }.buttonStyle(.borderedProminent)
+            }
+        case .needsApproval:
+            card(symbol: "hand.raised", title: "Allow Sirocco in System Settings",
+                 body: "In General, Login Items & Extensions, switch on Sirocco under Allow in the Background. This updates on its own.") {
+                Button("Open System Settings") { model.openApprovalSettings() }.buttonStyle(.borderedProminent)
+            }
+        case .starting:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Starting the helper").font(.caption).foregroundStyle(.secondary)
+            }
+        case .notResponding:
+            card(symbol: "exclamationmark.triangle", title: "The helper is not responding",
+                 body: "Restarting it usually fixes this.") {
+                Button(model.busy ? "Restarting…" : "Restart Helper") { model.restartHelper() }
+                    .disabled(model.busy)
+            }
+        case .ready:
+            EmptyView()
+        }
+    }
+
+    private func card<Actions: View>(symbol: String, title: String, body: String,
+                                     @ViewBuilder actions: () -> Actions) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(.system(size: 12, weight: .semibold))
+                Text(body).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                actions().padding(.top, 2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
 }

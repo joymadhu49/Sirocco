@@ -4,7 +4,8 @@
 
 - First release.
 - Smart mode: fans follow your curve while plugged in and in use, otherwise macOS runs them.
-- Minimum and Maximum speed, ramp temperatures, away timeout, and Quiet, Balanced and Cool presets.
-- Menu bar fan that spins with the real fan speed, with optional temperature or speed readout.
-- Privileged helper registered through SMAppService, talking over signature checked XPC.
+- Minimum and maximum speed, ramp temperatures, away timeout, and Quiet, Balanced and Cool presets.
+- Settings window with live readings for each fan and a graph of your fan curve.
+- Menu bar fan that spins with the real fan speed, with optional temperature and speed.
+- Privileged helper registered through SMAppService, talking over signature checked XPC. Sirocco registers it on launch and restarts it if it stops answering.
 - Automatic updates through Sparkle.

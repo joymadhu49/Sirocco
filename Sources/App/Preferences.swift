@@ -6,13 +6,14 @@ final class Preferences: ObservableObject {
     static let shared = Preferences()
 
     enum MenuBarText: String, CaseIterable, Identifiable {
-        case none, temperature, speed
+        case none, temperature, speed, both
         var id: String { rawValue }
         var title: String {
             switch self {
             case .none: "Icon only"
             case .temperature: "Chip temperature"
             case .speed: "Fan speed"
+            case .both: "Temperature and speed"
             }
         }
     }

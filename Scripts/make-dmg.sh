@@ -21,12 +21,19 @@ DEFAULT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString
 VERSION="${1:-$DEFAULT_VERSION}"
 DMG="build/${APP_NAME}-${VERSION}.dmg"
 
+BACKGROUND="Resources/dmg-background.tiff"
+if [[ ! -f "$BACKGROUND" ]]; then
+    echo "==> $BACKGROUND missing, rendering it"
+    bash Scripts/make-dmg-background.sh || echo "==> could not render the background, continuing without it"
+fi
+
 rm -f "$DMG"
 echo "==> creating $DMG"
 
-# Preferred: a styled installer window with positioned icons and a volume icon,
-# via create-dmg (`brew install create-dmg`). 560x400 pt window, app on the left,
-# the Applications drop link on the right.
+# Preferred: a styled installer window with positioned icons, a volume icon and the
+# cool-to-hot background, via create-dmg (`brew install create-dmg`). 560x440 pt window,
+# app on the left, the Applications drop link on the right. Scripts/make_dmg_background.swift
+# draws the background around those same positions, so change them together.
 styled_dmg() {
     command -v create-dmg >/dev/null 2>&1 || return 1
     local stage
@@ -36,7 +43,7 @@ styled_dmg() {
     local args=(
         --volname "$APP_NAME"
         --window-pos 200 120
-        --window-size 560 400
+        --window-size 560 440
         --icon-size 112
         --text-size 13
         --icon "${APP_NAME}.app" 150 190
@@ -45,6 +52,7 @@ styled_dmg() {
         --no-internet-enable
     )
     [[ -f "Resources/AppIcon.icns" ]] && args+=(--volicon "Resources/AppIcon.icns")
+    [[ -f "$BACKGROUND" ]] && args+=(--background "$BACKGROUND")
     create-dmg "${args[@]}" "$DMG" "$stage"
 }
 

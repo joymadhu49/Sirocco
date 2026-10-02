@@ -47,6 +47,14 @@ final class AppModel: ObservableObject {
     private var syncedWithHelper = false
     private var lastContact = Date.distantPast
     private var enabledSince: Date?
+    private var autoRestarts = 0
+    private var lastAutoRestart = Date.distantPast
+
+    /// Set when the user removes the helper themselves, so Sirocco does not put it straight back.
+    private var helperRemovedByUser: Bool {
+        get { UserDefaults.standard.bool(forKey: "helperRemovedByUser") }
+        set { UserDefaults.standard.set(newValue, forKey: "helperRemovedByUser") }
+    }
 
     private init() {
         if let smc {
@@ -67,6 +75,7 @@ final class AppModel: ObservableObject {
 
     func start() {
         guard timer == nil else { return }
+        registerHelperIfNeeded()
         Task { await refresh() }
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
@@ -142,6 +151,33 @@ final class AppModel: ObservableObject {
         @unknown default:
             phase = .notInstalled
         }
+        if phase == .ready { autoRestarts = 0 }
+        recoverHelperIfNeeded()
+    }
+
+    // MARK: Looking after the helper
+    //
+    // The helper is plumbing, and the user should not have to manage it. Sirocco registers it
+    // on launch and restarts it when it stops answering; the one thing only the user can do is
+    // allow it in System Settings, once.
+
+    /// Registers the helper without being asked. Quiet: it does not open System Settings, the
+    /// setup card offers that.
+    private func registerHelperIfNeeded() {
+        guard fanCount > 0, !helperRemovedByUser else { return }
+        let registration = helper.registration
+        guard registration == .notRegistered || registration == .notFound else { return }
+        try? helper.register()
+    }
+
+    /// A helper that is registered but silent gets restarted, a few times at most and a minute
+    /// apart, before the setup card asks the user to step in.
+    private func recoverHelperIfNeeded() {
+        guard phase == .notResponding, !busy, autoRestarts < 3,
+              Date().timeIntervalSince(lastAutoRestart) > 60 else { return }
+        autoRestarts += 1
+        lastAutoRestart = Date()
+        restartHelper()
     }
 
     /// No helper to ask: the SMC and sensors are readable without privileges.
@@ -224,6 +260,7 @@ final class AppModel: ObservableObject {
 
     func enableHelper() {
         lastError = nil
+        helperRemovedByUser = false
         do {
             try helper.register()
         } catch {
@@ -258,6 +295,7 @@ final class AppModel: ObservableObject {
     /// Unregistering stops the helper; it hands the fans back to macOS on the way out.
     func removeHelper() {
         busy = true
+        helperRemovedByUser = true
         Task {
             try? await helper.unregister()
             helper.reset()

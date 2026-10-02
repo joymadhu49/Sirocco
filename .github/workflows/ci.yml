@@ -82,6 +82,14 @@ jobs:
           bash Scripts/make-icon.sh
           test -f Resources/AppIcon.icns
 
+      - name: Verify the installer background renders from source
+        run: |
+          set -euo pipefail
+          # Committed like the icon, and generated from Scripts/make_dmg_background.swift.
+          rm -f Resources/dmg-background.tiff
+          bash Scripts/make-dmg-background.sh
+          test -f Resources/dmg-background.tiff
+
       - name: Check the DMG packaging path
         run: |
           set -euo pipefail

@@ -1,0 +1,39 @@
+name: Bug report
+description: Something in Sirocco does not work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac
+      placeholder: MacBook Pro 14-inch, M3 Pro
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "15.5"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Sirocco version
+      description: Settings, General.
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Helper log
+      description: The last lines of /Library/Logs/Sirocco.log, if the problem is about fan control.
+      render: text

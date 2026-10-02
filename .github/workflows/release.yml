@@ -1,0 +1,142 @@
+name: Release
+
+# Pushing a tag like v1.0.1 builds, signs, notarizes and publishes that version: the DMG and
+# the Sparkle appcast go on a GitHub release, which is what installed copies update from.
+# The same steps run locally with Scripts/release.sh.
+#
+# Repository secrets this needs (Settings > Secrets and variables > Actions):
+#   DEVELOPER_ID_P12            base64 of the "Developer ID Application" certificate and key (.p12)
+#   DEVELOPER_ID_P12_PASSWORD   the password that .p12 was exported with
+#   AC_API_KEY_ID               App Store Connect API key, for notarization
+#   AC_API_ISSUER_ID
+#   AC_API_KEY_P8               base64 of the AuthKey_<id>.p8 file
+#   SPARKLE_ED_PRIVATE_KEY      Sparkle's EdDSA private key (generate_keys -x exports it)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # A release published by hand (Scripts/release.sh, then gh release create) also creates the
+  # tag. There is nothing left to do for it, so the build is skipped.
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.find.outputs.published }}
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: check
+    if: needs.check.outputs.published != 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      SIROCCO_SIGNING_IDENTITY: Developer ID Application
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the tag matches the version in project.yml
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^ *MARKETING_VERSION: *//p' project.yml | head -1)"
+          if [[ "v${VERSION}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match MARKETING_VERSION ${VERSION} in project.yml"
+            exit 1
+          fi
+          if ! grep -q "^## ${VERSION}\$" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## ${VERSION}' section"
+            exit 1
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Select the newest installed Xcode
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      - name: Install XcodeGen and create-dmg
+        run: brew install xcodegen create-dmg
+
+      - name: Import the Developer ID certificate
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DEVELOPER_ID_P12" ]]; then
+            echo "::error::The DEVELOPER_ID_P12 secret is not set. See the header of release.yml."
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          printf '%s' "$DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$KEYCHAIN" -P "$DEVELOPER_ID_P12_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+
+      - name: Build and sign
+        run: bash Scripts/build.sh
+
+      - name: Notarize the app
+        env:
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+        run: bash Scripts/notarize.sh build/Sirocco.app
+
+      - name: Package the DMG
+        run: bash Scripts/make-dmg.sh "$VERSION"
+
+      - name: Notarize the DMG
+        env:
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+        run: bash Scripts/notarize.sh "build/Sirocco-${VERSION}.dmg"
+
+      - name: Sign the update for Sparkle
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SPARKLE_ED_PRIVATE_KEY" ]]; then
+            echo "::error::The SPARKLE_ED_PRIVATE_KEY secret is not set. See the header of release.yml."
+            exit 1
+          fi
+          bash Scripts/make-appcast.sh "build/Sirocco-${VERSION}.dmg"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # This version's section of the changelog, without its heading.
+          awk -v v="## ${VERSION}" '$0 == v { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" "build/Sirocco-${VERSION}.dmg" build/appcast.xml \
+            --title "Sirocco ${VERSION}" --notes-file "$RUNNER_TEMP/notes.md"
+
+      - name: Remove the signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

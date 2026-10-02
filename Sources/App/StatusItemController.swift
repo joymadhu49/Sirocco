@@ -82,6 +82,10 @@ final class StatusItemController: NSObject {
         case .none: text = ""
         case .temperature: text = model.chipTemp.map { " " + prefs.temperature($0, unit: false) } ?? ""
         case .speed: text = model.averageRPM > 0 ? " " + Preferences.shortRPM(model.averageRPM) : ""
+        case .both:
+            let parts = [model.chipTemp.map { prefs.temperature($0, unit: false) },
+                         model.averageRPM > 0 ? Preferences.shortRPM(model.averageRPM) : nil].compactMap { $0 }
+            text = parts.isEmpty ? "" : " " + parts.joined(separator: " ")
         }
         button.attributedTitle = NSAttributedString(string: text, attributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
