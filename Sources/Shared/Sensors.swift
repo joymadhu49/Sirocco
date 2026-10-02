@@ -52,7 +52,7 @@ enum Sensors {
         return type == kIOPMACPowerKey
     }
 
-    /// Battery percentage and whether it is charging, for display.
+    /// Battery percentage and whether it is charging, for display. Nil on a Mac without a battery.
     static func battery() -> (percent: Int, charging: Bool)? {
         guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let list = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef]

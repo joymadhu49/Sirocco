@@ -1,5 +1,5 @@
 // Talks to the AppleSMC user client. Reading works for any user; writing fan keys needs root,
-// which is why only fanlined writes.
+// which is why only the helper writes.
 //
 // The kernel expects the 80 byte SMCKeyData_t struct from Apple's old smc.h. Swift gives no
 // layout guarantee for a mirrored struct, so the bytes are packed by hand at the offsets clang
@@ -160,24 +160,6 @@ final class SMC {
     func releaseToSystem() {
         for i in 0 ..< fanCount { setUInt8("F\(i)Md", 0) }
         setUInt8("Ftst", 0)
-    }
-
-    // MARK: Key scan (fallback temperatures)
-
-    func keys(withPrefixes prefixes: [String]) -> [String] {
-        guard let countBytes = read("#KEY"), countBytes.count >= 4 else { return [] }
-        let count = countBytes.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-        var found: [String] = []
-        for index in 0 ..< count {
-            var buffer = [UInt8](repeating: 0, count: Offset.total)
-            buffer[Offset.command] = Command.keyAtIndex.rawValue
-            buffer.put(index, at: Offset.index)
-            guard let out = call(buffer) else { continue }
-            let raw = out.uint32(at: Offset.key)
-            let name = String(bytes: [24, 16, 8, 0].map { UInt8((raw >> $0) & 0xff) }, encoding: .ascii) ?? ""
-            if prefixes.contains(where: name.hasPrefix) { found.append(name) }
-        }
-        return found
     }
 }
 

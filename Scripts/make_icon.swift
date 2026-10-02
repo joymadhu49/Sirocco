@@ -1,5 +1,5 @@
-// Renders Resources/AppIcon.icns: the menu bar fan on a dark squircle with a cool glow.
-// Run from the project root: swift Scripts/make_icon.swift
+// Renders the app icon: the menu bar fan on a dark squircle with a cool glow behind it.
+// Run from the project root through Scripts/make-icon.sh.
 import AppKit
 
 func drawIcon(size: CGFloat) -> NSImage {
@@ -14,9 +14,9 @@ func drawIcon(size: CGFloat) -> NSImage {
     NSGraphicsContext.current?.saveGraphicsState()
     squircle.setClip()
     let center = NSPoint(x: size / 2, y: size / 2)
-    NSGradient(colors: [NSColor(calibratedRed: 0.35, green: 0.62, blue: 1.0, alpha: 0.30),
+    NSGradient(colors: [NSColor(calibratedRed: 0.35, green: 0.62, blue: 1.0, alpha: 0.32),
                         NSColor(calibratedRed: 0.35, green: 0.62, blue: 1.0, alpha: 0)])!
-        .draw(fromCenter: center, radius: 0, toCenter: center, radius: 360 * s, options: [])
+        .draw(fromCenter: center, radius: 0, toCenter: center, radius: 380 * s, options: [])
     NSGraphicsContext.current?.restoreGraphicsState()
 
     let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: 104 * s, dy: 104 * s), xRadius: 181 * s, yRadius: 181 * s)
@@ -27,12 +27,15 @@ func drawIcon(size: CGFloat) -> NSImage {
     let config = NSImage.SymbolConfiguration(pointSize: 430 * s, weight: .medium)
         .applying(.init(paletteColors: [NSColor(calibratedRed: 0.95, green: 0.96, blue: 0.98, alpha: 1)]))
     if let fan = NSImage(systemSymbolName: "fan.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config) {
-        let r = NSRect(x: (size - fan.size.width) / 2, y: (size - fan.size.height) / 2,
-                       width: fan.size.width, height: fan.size.height)
-        fan.draw(in: r)
+        fan.draw(in: NSRect(x: (size - fan.size.width) / 2, y: (size - fan.size.height) / 2,
+                            width: fan.size.width, height: fan.size.height))
     }
     image.unlockFocus()
     return image
+}
+
+func png(_ image: NSImage) -> Data {
+    NSBitmapImageRep(data: image.tiffRepresentation!)!.representation(using: .png, properties: [:])!
 }
 
 let iconset = URL(fileURLWithPath: "build/AppIcon.iconset")
@@ -40,9 +43,8 @@ try? FileManager.default.removeItem(at: iconset)
 try! FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
 for base in [16, 32, 128, 256, 512] {
     for scale in [1, 2] {
-        let px = CGFloat(base * scale)
-        let rep = NSBitmapImageRep(data: drawIcon(size: px).tiffRepresentation!)!
         let name = scale == 1 ? "icon_\(base)x\(base).png" : "icon_\(base)x\(base)@2x.png"
-        try! rep.representation(using: .png, properties: [:])!.write(to: iconset.appendingPathComponent(name))
+        try! png(drawIcon(size: CGFloat(base * scale))).write(to: iconset.appendingPathComponent(name))
     }
 }
+try! png(drawIcon(size: 512)).write(to: URL(fileURLWithPath: "Resources/AppIcon.png"))

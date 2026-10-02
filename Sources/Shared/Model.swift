@@ -1,18 +1,5 @@
-// The contract between Fanline.app (writes config, reads status) and fanlined (the reverse).
+// The data the app and the helper exchange over XPC.
 import Foundation
-
-enum Paths {
-    /// Root owned. fanlined writes status.json here, so nothing user writable sits next to it.
-    static let supportDir = URL(fileURLWithPath: "/Library/Application Support/Fanline")
-    /// Owned by the user at install time, so the app can save settings without root.
-    static let userDir = supportDir.appendingPathComponent("user")
-    static let config = userDir.appendingPathComponent("config.json")
-    static let status = supportDir.appendingPathComponent("status.json")
-
-    static let daemonLabel = "com.joymadhu.fanlined"
-    static let daemonPlist = URL(fileURLWithPath: "/Library/LaunchDaemons/com.joymadhu.fanlined.plist")
-    static let daemonBinary = URL(fileURLWithPath: "/Library/PrivilegedHelperTools/com.joymadhu.fanlined")
-}
 
 enum FanMode: String, Codable, CaseIterable {
     /// Boost on the curve when the conditions hold, otherwise leave the fans to macOS.
@@ -35,7 +22,7 @@ struct FanConfig: Codable, Equatable {
 
     init() {}
 
-    // Every field is optional on disk so an older or hand edited file still loads.
+    // Every field is optional so a config saved by an older version still loads.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = FanConfig()
@@ -49,8 +36,8 @@ struct FanConfig: Codable, Equatable {
         idleMinutes = (try? c.decodeIfPresent(Double.self, forKey: .idleMinutes)) ?? d.idleMinutes
     }
 
-    /// Clamped to the hardware and to sane ranges. fanlined runs as root and reads a user
-    /// writable file, so nothing in it is trusted as is.
+    /// Clamped to the hardware and to sane ranges. The helper runs as root, so nothing that
+    /// arrives over XPC is used as is.
     func sanitized(hardwareMin: Double, hardwareMax: Double) -> FanConfig {
         var c = self
         let lo = hardwareMin > 0 ? hardwareMin : 1000
@@ -70,14 +57,45 @@ struct FanConfig: Codable, Equatable {
         let t = Swift.min(Swift.max((temperature - startTemp) / (fullTemp - startTemp), 0), 1)
         return minRPM + (maxRPM - minRPM) * t
     }
+}
 
-    static func load() -> FanConfig {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: Paths.config.path),
-              let size = attributes[.size] as? Int, size < 64 * 1024,
-              let data = try? Data(contentsOf: Paths.config),
-              let config = try? JSONDecoder().decode(FanConfig.self, from: data)
-        else { return FanConfig() }
-        return config
+/// Ready made settings, scaled to whatever range the Mac's fans have.
+enum FanPreset: String, CaseIterable, Identifiable {
+    case quiet, balanced, cool
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .quiet: "Quiet"
+        case .balanced: "Balanced"
+        case .cool: "Cool"
+        }
+    }
+
+    func apply(to config: FanConfig, hardwareMin: Double, hardwareMax: Double) -> FanConfig {
+        var c = config
+        let span = hardwareMax - hardwareMin
+        switch self {
+        case .quiet:
+            c.minRPM = hardwareMin
+            c.maxRPM = hardwareMin + span * 0.4
+            c.startTemp = 65
+            c.fullTemp = 90
+        case .balanced:
+            c.minRPM = hardwareMin + span * 0.2
+            c.maxRPM = hardwareMin + span * 0.75
+            c.startTemp = 55
+            c.fullTemp = 80
+        case .cool:
+            c.minRPM = hardwareMin + span * 0.4
+            c.maxRPM = hardwareMax
+            c.startTemp = 45
+            c.fullTemp = 70
+        }
+        c.minRPM = (c.minRPM / 100).rounded() * 100
+        c.maxRPM = (c.maxRPM / 100).rounded() * 100
+        return c.sanitized(hardwareMin: hardwareMin, hardwareMax: hardwareMax)
     }
 }
 
@@ -88,6 +106,8 @@ enum FanState: String, Codable {
     case idle
     case off
     case safety
+    case noFans
+    case smcRefused
 
     var label: String {
         switch self {
@@ -97,6 +117,8 @@ enum FanState: String, Codable {
         case .idle: "You're away"
         case .off: "Apple control"
         case .safety: "Too hot, full speed"
+        case .noFans: "No fans"
+        case .smcRefused: "Fans locked"
         }
     }
 
@@ -104,18 +126,12 @@ enum FanState: String, Codable {
 }
 
 struct FanStatus: Codable {
-    var updated: Date
+    var helperVersion: String
     var state: FanState
+    var config: FanConfig
     var targetRPM: Double
     var chipTemp: Double
     var onAC: Bool
     var idleSeconds: Double
     var fans: [SMC.Fan]
-
-    static func load() -> FanStatus? {
-        guard let data = try? Data(contentsOf: Paths.status) else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .secondsSince1970
-        return try? decoder.decode(FanStatus.self, from: data)
-    }
 }

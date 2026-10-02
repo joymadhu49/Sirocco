@@ -1,0 +1,89 @@
+name: CI
+
+# Builds the app on every push and pull request so regressions surface
+# immediately instead of at release-tag time. Runs the same Scripts/build.sh the
+# release pipeline runs; with no Developer ID certificate on the runner it falls
+# back to ad-hoc signing, which is exactly what a compile + bundle check needs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Select the newest installed Xcode
+        # XcodeGen writes objectVersion 77, which only Xcode 16 and later can
+        # read, and a runner image's *default* Xcode is often several versions
+        # behind the newest one it has installed.
+        run: |
+          set -euo pipefail
+          NEWEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$NEWEST"
+          xcodebuild -version
+
+      - name: Toolchain versions
+        run: swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build + bundle (ad-hoc signed)
+        run: bash Scripts/build.sh
+
+      - name: Verify bundle layout
+        run: |
+          set -euo pipefail
+          APP="build/Sirocco.app"
+          PLIST="$APP/Contents/Info.plist"
+
+          test -x "$APP/Contents/MacOS/Sirocco"
+          test -f "$PLIST"
+          test -f "$APP/Contents/Resources/AppIcon.icns"
+
+          # Apple silicon only, by design (Intel Macs use different SMC fan keys).
+          test "$(lipo -archs "$APP/Contents/MacOS/Sirocco")" = "arm64"
+
+          # The helper and its launchd plist must be where SMAppService looks for them.
+          test -x "$APP/Contents/MacOS/SiroccoHelper"
+          plutil -lint "$APP/Contents/Library/LaunchDaemons/com.joymadhu.sirocco.helper.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' \
+               "$APP/Contents/Library/LaunchDaemons/com.joymadhu.sirocco.helper.plist")" = "Contents/MacOS/SiroccoHelper"
+
+          # LSUIElement is what keeps Sirocco out of the Dock. Losing it turns a
+          # menu bar app into a windowed one, which is a silent, shipping-grade bug.
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$PLIST")" = "true"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST"
+
+          # Sparkle: the framework is embedded, the XPC services a non-sandboxed app does
+          # not use are gone, and the feed and key are set. Sparkle compares
+          # CFBundleVersion, so it has to move with the marketing version or no release
+          # would ever look newer than the one installed.
+          test -d "$APP/Contents/Frameworks/Sparkle.framework"
+          test ! -e "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices"
+          /usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$PLIST"
+          /usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$PLIST"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")" = \
+               "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+          codesign --verify --deep --strict "$APP"
+
+      - name: Verify the icon renders from source
+        run: |
+          set -euo pipefail
+          # Resources/AppIcon.icns is committed, but it is generated from
+          # Scripts/make_icon.swift — this proves the generator still works.
+          rm -f Resources/AppIcon.icns Resources/AppIcon.png
+          bash Scripts/make-icon.sh
+          test -f Resources/AppIcon.icns
+
+      - name: Check the DMG packaging path
+        run: |
+          set -euo pipefail
+          bash Scripts/make-dmg.sh
+          ls -lh build/Sirocco-*.dmg

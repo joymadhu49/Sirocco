@@ -1,67 +1,149 @@
 #!/usr/bin/env bash
-# Builds build/Fanline.app (menu bar app + fanlined helper inside it).
+# Build Sirocco.app into build/Sirocco.app.
 #
-#   bash Scripts/build.sh            build only
-#   bash Scripts/build.sh --install  build, put it in /Applications, (re)install the helper, run it
+#   bash Scripts/build.sh             build
+#   bash Scripts/build.sh --install   build, then replace /Applications/Sirocco.app and open it
 #
-# Plain swiftc rather than an Xcode project: two small targets that share three files.
+# The Xcode project is generated from project.yml, so this script owns the whole chain:
+# icon -> xcodegen -> xcodebuild -> codesign. CI and the release steps run this same script.
+#
+# Signing is done here by hand rather than by xcodebuild (invoked with CODE_SIGNING_ALLOWED=NO)
+# so one script works both with and without a certificate. Pick the mode with
+# SIROCCO_SIGNING_IDENTITY:
+#
+#   "Developer ID Application"   hardened runtime + secure timestamp, notarization ready.
+#                                The only mode in which fan control works: the helper accepts
+#                                XPC connections only from an app signed by the team in
+#                                Sources/Shared/Identity.swift, and the app trusts only a
+#                                helper signed the same way.
+#   "-"                          ad-hoc. Compiles and launches (readings work) but the helper
+#                                refuses it. Enough for a CI compile check.
+#
+# Unset, the script uses Developer ID when that certificate is installed, ad-hoc otherwise.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP=build/Fanline.app
+APP_NAME="Sirocco"
+HELPER_NAME="SiroccoHelper"
+HELPER_ID="com.joymadhu.sirocco.helper"
+CONFIGURATION="${CONFIGURATION:-Release}"
+DERIVED_DATA="${DERIVED_DATA:-build}"
+APP_DIR="build/${APP_NAME}.app"
 INSTALL=false
 [[ "${1:-}" == "--install" ]] && INSTALL=true
-SDK_FLAGS=(-O -target arm64-apple-macos14.0 -swift-version 5)
 
-mkdir -p build
-if [[ ! -f Resources/AppIcon.icns ]]; then
-    echo "==> rendering icon"
-    swift Scripts/make_icon.swift
-    iconutil -c icns build/AppIcon.iconset -o Resources/AppIcon.icns
+# Deliberately an empty <dict>, and comment free (Apple's AMFI parser rejects XML comments).
+# Sirocco needs no entitlement: reading the SMC needs none, and fan writes happen in the root
+# helper. No App Sandbox, because a sandboxed app cannot register a launchd daemon, which is
+# also why Sirocco ships outside the Mac App Store, Developer ID signed and notarized.
+ENTITLEMENTS="${APP_NAME}.entitlements"
+
+if ! command -v xcodegen >/dev/null 2>&1; then
+    echo "ERROR: xcodegen not found. Install it with: brew install xcodegen" >&2
+    exit 1
 fi
 
-echo "==> fanlined"
-swiftc "${SDK_FLAGS[@]}" Sources/Shared/*.swift Sources/Daemon/main.swift -o build/fanlined
+if [[ ! -f "Resources/AppIcon.icns" ]]; then
+    echo "==> Resources/AppIcon.icns missing, rendering it"
+    bash Scripts/make-icon.sh
+fi
 
-echo "==> Fanline"
-swiftc "${SDK_FLAGS[@]}" -parse-as-library Sources/Shared/*.swift Sources/App/*.swift -o build/Fanline
+echo "==> xcodegen generate"
+xcodegen generate --quiet
 
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp build/Fanline build/fanlined "$APP/Contents/MacOS/"
-cp Resources/Info.plist "$APP/Contents/"
-cp Resources/AppIcon.icns Resources/com.joymadhu.fanlined.plist Resources/*.sh "$APP/Contents/Resources/"
+echo "==> xcodebuild ($CONFIGURATION, unsigned; signed below)"
+mkdir -p build
+LOG="build/xcodebuild.log"
+# Full log to a file, errors to the terminal. Piping xcodebuild into grep would hide its exit
+# status, which is how a failed build gets signed anyway.
+if ! xcodebuild \
+    -project "${APP_NAME}.xcodeproj" \
+    -scheme "${APP_NAME}" \
+    -configuration "$CONFIGURATION" \
+    -derivedDataPath "$DERIVED_DATA" \
+    CODE_SIGNING_ALLOWED=NO \
+    CODE_SIGNING_REQUIRED=NO \
+    CODE_SIGN_IDENTITY="" \
+    CODE_SIGN_ENTITLEMENTS="" \
+    build > "$LOG" 2>&1; then
+    echo "ERROR: build failed" >&2
+    grep -E "error:" "$LOG" | sort -u | head -40 >&2
+    echo "(full log in $LOG)" >&2
+    exit 1
+fi
 
-IDENTITY="${FANLINE_SIGNING_IDENTITY:-}"
-if [[ -z "$IDENTITY" ]]; then
-    if security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
-        IDENTITY="Developer ID Application"
+BUILT="${DERIVED_DATA}/Build/Products/${CONFIGURATION}/${APP_NAME}.app"
+if [[ ! -d "$BUILT" ]]; then
+    echo "ERROR: xcodebuild reported success but there is no bundle at $BUILT" >&2
+    exit 1
+fi
+
+echo "==> staging ${APP_DIR}"
+rm -rf "$APP_DIR"
+cp -R "$BUILT" "$APP_DIR"
+xattr -cr "$APP_DIR" 2>/dev/null || true
+
+HELPER="${APP_DIR}/Contents/MacOS/${HELPER_NAME}"
+DAEMON_PLIST="${APP_DIR}/Contents/Library/LaunchDaemons/${HELPER_ID}.plist"
+for required in "$HELPER" "$DAEMON_PLIST"; do
+    if [[ ! -e "$required" ]]; then
+        echo "ERROR: $required is missing from the bundle; check the copy phases in project.yml" >&2
+        exit 1
+    fi
+done
+
+# Sparkle arrives from SwiftPM ad-hoc signed. Under the hardened runtime, library validation
+# refuses a framework not signed by the app's team, and notarization rejects nested code
+# without a Developer ID and timestamp. So it is signed again, innermost first (no --deep,
+# which signs in the wrong order). Its XPC services serve sandboxed apps only and are dropped.
+SPARKLE="${APP_DIR}/Contents/Frameworks/Sparkle.framework"
+rm -rf "$SPARKLE/Versions/B/XPCServices" "$SPARKLE/XPCServices"
+
+sign_all() {
+    local flags=("$@")
+    codesign "${flags[@]}" "$SPARKLE/Versions/B/Autoupdate"
+    codesign "${flags[@]}" "$SPARKLE/Versions/B/Updater.app"
+    codesign "${flags[@]}" "$SPARKLE"
+    # The helper's identifier is what the app's XPC code signing requirement names.
+    codesign "${flags[@]}" --identifier "$HELPER_ID" "$HELPER"
+    codesign "${flags[@]}" --entitlements "$ENTITLEMENTS" "$APP_DIR"
+}
+
+have_developer_id() {
+    security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"
+}
+
+SIGNING_IDENTITY="${SIROCCO_SIGNING_IDENTITY:-}"
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+    if have_developer_id; then
+        SIGNING_IDENTITY="Developer ID Application"
     else
-        IDENTITY="-"
+        SIGNING_IDENTITY="-"
+        echo "==> No Developer ID certificate in the keychain, falling back to ad-hoc signing."
     fi
 fi
-echo "==> codesign ${IDENTITY}"
-if [[ "$IDENTITY" == "-" ]]; then
-    codesign --force --sign - "$APP/Contents/MacOS/fanlined"
-    codesign --force --sign - "$APP"
-else
-    # Helper first: signing the bundle seals what is already inside it.
-    codesign --force --options runtime --timestamp --identifier com.joymadhu.fanlined \
-        --sign "$IDENTITY" "$APP/Contents/MacOS/fanlined"
-    codesign --force --options runtime --timestamp --entitlements Fanline.entitlements \
-        --sign "$IDENTITY" "$APP"
-fi
-codesign --verify --strict --deep "$APP"
-echo "==> built $APP"
+
+case "$SIGNING_IDENTITY" in
+  "Developer ID"*)
+    have_developer_id || { echo "ERROR: no 'Developer ID Application' certificate installed" >&2; exit 1; }
+    echo "==> Signing with '$SIGNING_IDENTITY' (hardened runtime + secure timestamp)"
+    sign_all --force --options runtime --timestamp --sign "$SIGNING_IDENTITY"
+    codesign --verify --strict --deep --verbose=2 "$APP_DIR"
+    ;;
+  *)
+    echo "==> Ad-hoc signing (compile check only; the helper will refuse this build)"
+    sign_all --force --sign -
+    ;;
+esac
+
+echo "==> Built $APP_DIR ($(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_DIR/Contents/Info.plist"))"
 
 if [[ "$INSTALL" == true ]]; then
-    echo "==> installing to /Applications"
-    pkill -x Fanline 2>/dev/null || true
+    echo "==> Installing to /Applications"
+    pkill -x "$APP_NAME" 2>/dev/null || true
     sleep 0.5
-    rm -rf /Applications/Fanline.app
-    cp -R "$APP" /Applications/
-    echo "==> installing helper (sudo)"
-    sudo bash /Applications/Fanline.app/Contents/Resources/install-helper.sh /Applications/Fanline.app "$USER"
-    open -g /Applications/Fanline.app
-    echo "==> Fanline is running"
+    rm -rf "/Applications/${APP_NAME}.app"
+    cp -R "$APP_DIR" /Applications/
+    open "/Applications/${APP_NAME}.app"
+    echo "==> ${APP_NAME} is running"
 fi
