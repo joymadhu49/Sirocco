@@ -5,8 +5,8 @@ name: Release
 # The same steps run locally with Scripts/release.sh.
 #
 # Repository secrets this needs (Settings > Secrets and variables > Actions):
-#   DEVELOPER_ID_P12            base64 of the "Developer ID Application" certificate and key (.p12)
-#   DEVELOPER_ID_P12_PASSWORD   the password that .p12 was exported with
+#   DEVELOPER_ID_CERT_P12            base64 of the "Developer ID Application" certificate and key (.p12)
+#   DEVELOPER_ID_CERT_PASSWORD   the password that .p12 was exported with
 #   AC_API_KEY_ID               App Store Connect API key, for notarization
 #   AC_API_ISSUER_ID
 #   AC_API_KEY_P8               base64 of the AuthKey_<id>.p8 file
@@ -76,21 +76,21 @@ jobs:
 
       - name: Import the Developer ID certificate
         env:
-          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
-          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          DEVELOPER_ID_CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
         run: |
           set -euo pipefail
-          if [[ -z "$DEVELOPER_ID_P12" ]]; then
-            echo "::error::The DEVELOPER_ID_P12 secret is not set. See the header of release.yml."
+          if [[ -z "$DEVELOPER_ID_CERT_P12" ]]; then
+            echo "::error::The DEVELOPER_ID_CERT_P12 secret is not set. See the header of release.yml."
             exit 1
           fi
           KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
-          printf '%s' "$DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          printf '%s' "$DEVELOPER_ID_CERT_P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 3600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security import "$RUNNER_TEMP/developer-id.p12" -k "$KEYCHAIN" -P "$DEVELOPER_ID_P12_PASSWORD" \
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$KEYCHAIN" -P "$DEVELOPER_ID_CERT_PASSWORD" \
             -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
